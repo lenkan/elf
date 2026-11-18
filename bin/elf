@@ -28,7 +28,7 @@ Usage: elf <command> [args]
   ls                        list this repo's tasks
   attach <task>             switch to the task's tmux window, restarting the agent if needed
   review <task>             fetch the agent's commits and check out elf/<task> here;
-                            on it already, fast-forward to the agent's new commits
+                            on it already, update to the agent's new commits
   resume <task>             give your commits to the agent and switch back to your branch
   rm [-f] <task>            stop the agent and delete its clone (keeps your local branch)
 EOF
@@ -133,7 +133,7 @@ $prompt
 
 - Work autonomously. Don't stop for routine questions: make a reasonable call and note it in your summary.
 - Commit on $branch as you go, with clear messages. Never push.
-- Don't amend, rebase or reset commits you've made. I may already be reviewing them.
+- Don't amend, rebase or reset commits unless I ask you to. I may already be reviewing them.
 - When the task is done, or you're blocked on a decision only I can make, commit everything so the working tree is clean. Then stop and give a short summary: what you did, what you couldn't verify and what you need from me.
 - I review by fetching your branch into my own checkout, and I may add commits there. When I come back, run \`git pull --ff-only\` before anything else to get my commits, then read my feedback. If the pull fails because you committed in the meantime, use \`git pull --no-rebase\` instead.
 EOF
@@ -275,35 +275,63 @@ cmd_review() {
 	local cur
 	cur="$(current_branch)"
 	[ -n "$cur" ] || die "you're on a detached HEAD; switch to a branch first"
+	[ "$cur" = "$branch" ] || [[ $cur != elf/* ]] || die "finish the other review first: elf resume ${cur#elf/}"
+	require_clean
+
+	local mine theirs
+	mine="$(git rev-parse --verify --quiet "refs/heads/$branch" || true)"
+	git fetch --quiet --no-tags "$work" "$branch"
+	theirs="$(git rev-parse FETCH_HEAD)"
+	if [ -n "$mine" ] && ! git merge-base --is-ancestor "$mine" "$theirs"; then
+		git merge-base --is-ancestor "$theirs" "$mine" || check_rewrite "$mine" "$theirs"
+	fi
+	echo "$theirs" >"$dir/seen"
+	if [ -n "$mine" ] && git merge-base --is-ancestor "$theirs" "$mine"; then
+		theirs="$mine"
+	fi
+
 	if [ "$cur" = "$branch" ]; then
-		review_update
+		# git won't fetch into the checked-out branch, so move it here
+		git reset --quiet --keep "$theirs"
+		if [ "$theirs" = "$mine" ]; then
+			echo "no new commits from the agent"
+		else
+			git log --oneline --reverse "$(git merge-base "$mine" "$theirs")..HEAD"
+		fi
 		return
 	fi
-	[[ $cur != elf/* ]] || die "finish the other review first: elf resume ${cur#elf/}"
-	require_clean
-	git fetch --quiet --no-tags "$work" "$branch:$branch" ||
-		die "the agent's $branch doesn't fast-forward yours: has it pulled your last commits?"
+	git branch --quiet --force "$branch" "$theirs"
 	echo "$cur" >"$dir/return"
 	git switch --quiet "$branch"
 	git log --oneline --reverse "$(cat "$dir/base")..HEAD"
 	echo "on $branch. Commit any changes, then: elf resume $task"
 }
 
-# Already reviewing: fast-forward to the agent's new commits. git won't fetch
-# into the checked-out branch, so this fetches to FETCH_HEAD and merges.
-review_update() {
-	local old
-	require_clean
-	git fetch --quiet --no-tags "$work" "$branch"
-	if git merge-base --is-ancestor FETCH_HEAD HEAD; then
-		echo "no new commits from the agent"
+# Your $branch ($1) and the agent's ($2) have both moved on. Fine if the agent
+# rewrote its branch (you asked it to squash, say) and already had all your
+# commits: its version wins. Dies if taking it would lose commits of yours.
+check_rewrite() {
+	local mine="$1" theirs="$2" given seen unknown
+	# The agent has what you last gave it, and what it had at your last review
+	given="$(git --git-dir="$host_git" rev-parse "$branch")"
+	seen="$(cat "$dir/seen" 2>/dev/null || cat "$dir/base")"
+	unknown=("$mine" "^$given" "^$seen")
+	if [ -z "$(git rev-list -1 "${unknown[@]}")" ]; then
+		echo "the agent rewrote $branch; taking its version"
 		return
 	fi
-	git merge-base --is-ancestor HEAD FETCH_HEAD ||
-		die "you and the agent both have new commits: elf resume $task so it pulls yours, then review again"
-	old="$(git rev-parse HEAD)"
-	git merge --quiet --ff-only FETCH_HEAD
-	git log --oneline --reverse "$old..HEAD"
+	{
+		echo "elf: you have commits the agent never got:"
+		git log --oneline --reverse "${unknown[@]}" | sed 's/^/  /'
+		if git merge-base --is-ancestor "$given" "$theirs"; then
+			echo "It has new commits too. Give it yours, then review again:"
+			echo "  git switch $branch && elf resume $task"
+		else
+			echo "And it rewrote its branch. Put them on top of its version, then review again:"
+			echo "  git switch $branch && git reset --keep $theirs && git cherry-pick ${unknown[*]}"
+		fi
+	} >&2
+	exit 1
 }
 
 cmd_resume() {
@@ -312,7 +340,9 @@ cmd_resume() {
 	[ "$(current_branch)" = "$branch" ] || die "not on $branch"
 	[ -f "$dir/return" ] || die "no branch to return to; switch yourself"
 	require_clean
-	git push --quiet "$host_git" "$branch:$branch"
+	# Forced: after the agent rewrites its branch, yours no longer contains what
+	# you gave it last time. host.git is only a drop box, so nothing is lost.
+	git push --quiet "$host_git" "+$branch:$branch"
 	git switch --quiet "$(cat "$dir/return")"
 	rm "$dir/return"
 	echo "back on $(current_branch). Tell the agent your feedback; it pulls your commits first"
