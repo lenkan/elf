@@ -30,7 +30,7 @@ Inside tmux, from your repo:
 elf start fix-login    # prompt opens in your git editor; -a to switch to it
 elf ls
 elf attach fix-login
-elf review fix-login   # check out elf/fix-login here
+elf review fix-login   # check out elf/fix-login here; again for its new commits
 elf resume fix-login   # back to your branch; give feedback in its window
 elf rm fix-login
 ```

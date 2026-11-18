@@ -27,7 +27,8 @@ Usage: elf <command> [args]
                             (or reads stdin). -a switches to its window
   ls                        list this repo's tasks
   attach <task>             switch to the task's tmux window, restarting the agent if needed
-  review <task>             fetch the agent's commits and check out elf/<task> here
+  review <task>             fetch the agent's commits and check out elf/<task> here;
+                            on it already, fast-forward to the agent's new commits
   resume <task>             give your commits to the agent and switch back to your branch
   rm [-f] <task>            stop the agent and delete its clone (keeps your local branch)
 EOF
@@ -274,7 +275,10 @@ cmd_review() {
 	local cur
 	cur="$(current_branch)"
 	[ -n "$cur" ] || die "you're on a detached HEAD; switch to a branch first"
-	[ "$cur" != "$branch" ] || die "already on $branch"
+	if [ "$cur" = "$branch" ]; then
+		review_update
+		return
+	fi
 	[[ $cur != elf/* ]] || die "finish the other review first: elf resume ${cur#elf/}"
 	require_clean
 	git fetch --quiet --no-tags "$work" "$branch:$branch" ||
@@ -283,6 +287,23 @@ cmd_review() {
 	git switch --quiet "$branch"
 	git log --oneline --reverse "$(cat "$dir/base")..HEAD"
 	echo "on $branch. Commit any changes, then: elf resume $task"
+}
+
+# Already reviewing: fast-forward to the agent's new commits. git won't fetch
+# into the checked-out branch, so this fetches to FETCH_HEAD and merges.
+review_update() {
+	local old
+	require_clean
+	git fetch --quiet --no-tags "$work" "$branch"
+	if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+		echo "no new commits from the agent"
+		return
+	fi
+	git merge-base --is-ancestor HEAD FETCH_HEAD ||
+		die "you and the agent both have new commits: elf resume $task so it pulls yours, then review again"
+	old="$(git rev-parse HEAD)"
+	git merge --quiet --ff-only FETCH_HEAD
+	git log --oneline --reverse "$old..HEAD"
 }
 
 cmd_resume() {
