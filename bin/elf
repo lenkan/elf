@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+# Hand a task to an opencode agent in a podman container, review its branch in
+# your own checkout, then hand it back.
+#
+# Per task, ~/.elf/<repo>/<task>/ holds:
+#   host.git  bare repo only the host writes; mounted read-only, the agent pulls from it
+#   work/     the agent's clone, the only thing it can write
+# The host never runs git inside work/ except `git fetch`: its config and hooks
+# are the agent's, and most git commands would honour them.
+set -euo pipefail
+
+self="$(readlink -f "${BASH_SOURCE[0]}")"
+root="$(dirname "$(dirname "$self")")"
+image="${ELF_IMAGE:-localhost/elf}"
+home="${ELF_HOME:-$HOME/.elf}"
+volume=elf-opencode
+
+usage() {
+	cat <<'EOF'
+Usage: elf <command> [args]
+
+  build                     build the container image
+  login                     log in to a model provider inside the container (once)
+  start [-a] [-b <base>] <task> [prompt...]
+                            start an agent on branch elf/<task>, from <base>
+                            (default HEAD). Without a prompt, opens your editor
+                            (or reads stdin). -a switches to its window
+  ls                        list this repo's tasks
+  attach <task>             switch to the task's tmux window, restarting the agent if needed
+  review <task>             fetch the agent's commits and check out elf/<task> here
+  resume <task>             give your commits to the agent and switch back to your branch
+  rm [-f] <task>            stop the agent and delete its clone (keeps your local branch)
+EOF
+}
+
+die() {
+	echo "elf: $*" >&2
+	exit 1
+}
+
+repo_init() {
+	top="$(git rev-parse --show-toplevel)" || die "not in a git repository"
+	repo="$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")"
+}
+
+task_init() {
+	task="${1:-}"
+	[[ $task =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "task name: lowercase letters, digits, . _ - (got '$task')"
+	repo_init
+	branch="elf/$task"
+	dir="$home/$repo/$task"
+	host_git="$dir/host.git"
+	work="$dir/work"
+	cname="elf-${repo//[^a-zA-Z0-9_.-]/-}-$task"
+}
+
+require_task() {
+	[ -d "$dir" ] || die "no task '$task' in $repo (elf ls)"
+}
+
+require_tmux() {
+	[ -n "${TMUX:-}" ] || die "run this inside tmux"
+}
+
+current_branch() {
+	git symbolic-ref --short -q HEAD || true
+}
+
+require_clean() {
+	[ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or stash your changes first"
+}
+
+podman_run=()
+podman_init() {
+	local name email
+	name="$(git config user.name || true)"
+	email="$(git config user.email || true)"
+	podman_run=(podman run --rm -it --hostname elf
+		'--userns=keep-id:uid=1000,gid=1000'
+		-e "GIT_AUTHOR_NAME=$name" -e "GIT_AUTHOR_EMAIL=$email"
+		-e "GIT_COMMITTER_NAME=$name" -e "GIT_COMMITTER_EMAIL=$email"
+		-v "$volume:/home/node/.local/share/opencode:U")
+}
+
+# Copies (not mounts) your opencode config: symlinks out of it wouldn't
+# resolve in the container, and :z would relabel the files they point to.
+refresh_config() {
+	local src="${XDG_CONFIG_HOME:-$HOME/.config}/opencode" item
+	rm -rf "$home/config"
+	mkdir -p "$home/config"
+	for item in cli.json opencode.json agents commands skills; do
+		if [ -e "$src/$item" ]; then
+			cp -rL "$src/$item" "$home/config/"
+		fi
+	done
+}
+
+find_window() {
+	tmux list-windows -a -F '#{window_id} #{@elf}' 2>/dev/null |
+		awk -v n="$cname" '$2 == n { print $1; exit }'
+}
+
+# Opens a tmux window running opencode in the task's container.
+run_agent() {
+	local cmd id
+	podman_init
+	cmd=("${podman_run[@]}" --name "$cname"
+		-v "$home/config:/home/node/.config/opencode:ro,z"
+		-v "$host_git:$host_git:ro,z"
+		-v "$work:$work:z"
+		-w "$work"
+		"$image" opencode --standalone --auto "$work" "$@")
+	id="$(tmux new-window -d -P -F '#{window_id}' -n "$task" -- "${cmd[@]}")"
+	tmux set-option -w -t "$id" @elf "$cname"
+	# Keep the window if podman or opencode fails, so the error stays readable
+	tmux set-option -w -t "$id" remain-on-exit failed
+	# Flags the window in the status bar once the agent goes quiet: done, or waiting
+	tmux set-option -w -t "$id" monitor-silence 30
+}
+
+agent_prompt() {
+	local base="$1" prompt="$2"
+	cat <<EOF
+You're working on your own in a container, on a clone of my repository.
+Your branch is $branch, based on $base.
+
+## Task
+
+$prompt
+
+## How to work
+
+- Work autonomously. Don't stop for routine questions: make a reasonable call and note it in your summary.
+- Commit on $branch as you go, with clear messages. Never push.
+- Don't amend, rebase or reset commits you've made. I may already be reviewing them.
+- When the task is done, or you're blocked on a decision only I can make, commit everything so the working tree is clean. Then stop and give a short summary: what you did, what you couldn't verify and what you need from me.
+- I review by fetching your branch into my own checkout, and I may add commits there. When I come back, run \`git pull --ff-only\` before anything else to get my commits, then read my feedback. If the pull fails because you committed in the meantime, use \`git pull --no-rebase\` instead.
+EOF
+}
+
+cmd_build() {
+	local version
+	version="$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
+	podman build -t "$image" ${version:+--build-arg "OPENCODE_VERSION=$version"} "$root"
+}
+
+cmd_login() {
+	podman_init
+	"${podman_run[@]}" "$image" opencode --standalone auth login
+}
+
+scissors='# ------------------------ >8 ------------------------'
+
+# Sets $prompt from your git editor, the way `git commit` does. Not called in
+# $(...): the editor needs the terminal on stdout.
+edit_prompt() {
+	local base_name="$1" tmp file editor
+	tmp="$(mktemp -d)"
+	file="$tmp/PROMPT.md"
+	cat >"$file" <<EOF
+
+$scissors
+# Task $task, on $branch from $base_name.
+# The agent sees only this prompt: give it the context, the constraints and
+# how to verify (tests, lint, build). Everything from the line above down is
+# ignored. Save an empty prompt to abort.
+EOF
+	editor="$(git var GIT_EDITOR)"
+	# GIT_EDITOR may hold arguments, so git runs it through sh too
+	sh -c "$editor \"\$@\"" "$editor" "$file" || die "editor failed, prompt left in $file"
+	prompt="$(sed "/^$scissors\$/,\$d" "$file")"
+	rm -r "$tmp"
+}
+
+cmd_start() {
+	local base=HEAD attach='' opt
+	while getopts ab: opt; do
+		case $opt in
+		a) attach=1 ;;
+		b) base=$OPTARG ;;
+		*) exit 1 ;;
+		esac
+	done
+	shift $((OPTIND - 1))
+	task_init "${1:-}"
+	shift
+
+	require_tmux
+	podman image exists "$image" || die "no image $image, run: elf build"
+	[ ! -e "$dir" ] || die "task '$task' already exists"
+	! git show-ref --verify --quiet "refs/heads/$branch" || die "branch $branch already exists"
+
+	local sha base_name
+	sha="$(git rev-parse --verify --quiet "$base^{commit}")" || die "unknown base '$base'"
+	base_name="$base"
+	if [ "$base" = HEAD ]; then
+		base_name="$(current_branch)"
+		base_name="${base_name:-$sha}"
+	fi
+
+	local prompt
+	if [ $# -gt 0 ]; then
+		prompt="$*"
+	elif [ -t 0 ]; then
+		edit_prompt "$base_name"
+	else
+		prompt="$(cat)"
+	fi
+	[[ $prompt =~ [^[:space:]] ]] || die "empty prompt, nothing started"
+
+	mkdir -p "$dir"
+	# --local hardlinks objects, so this is cheap. Safe: the container only mounts it read-only.
+	git clone --quiet --bare --local "$top" "$host_git"
+	git --git-dir="$host_git" remote remove origin
+	git --git-dir="$host_git" branch "$branch" "$sha"
+	# --shared borrows host.git's objects instead of copying them; new commits land in work/
+	git clone --quiet --shared --branch "$branch" "$host_git" "$work"
+	echo "$sha" >"$dir/base"
+
+	refresh_config
+	run_agent --prompt "$(agent_prompt "$base_name" "$prompt")"
+	echo "started $task on $branch from $base_name. Watch it: elf attach $task"
+	if [ -n "$(git status --porcelain)" ]; then
+		echo "note: the agent doesn't get your uncommitted changes"
+	fi
+	if [ -n "$attach" ]; then
+		cmd_attach "$task"
+	fi
+}
+
+cmd_ls() {
+	repo_init
+	local cur d t state
+	cur="$(current_branch)"
+	for d in "$home/$repo"/*/; do
+		[ -d "$d" ] || continue
+		t="$(basename "$d")"
+		task_init "$t"
+		if [ "$cur" = "$branch" ]; then
+			state="reviewing"
+		elif podman container exists "$cname"; then
+			state="running"
+		else
+			state="stopped"
+		fi
+		printf '%-30s %s\n' "$t" "$state"
+	done
+}
+
+cmd_attach() {
+	task_init "${1:-}"
+	require_task
+	require_tmux
+	local id
+	id="$(find_window)"
+	# remain-on-exit kept a failed agent's window; replace it
+	if [ -n "$id" ] && [ "$(tmux display-message -p -t "$id" '#{pane_dead}')" = 1 ]; then
+		tmux kill-window -t "$id"
+		id=
+	fi
+	if [ -z "$id" ]; then
+		! podman container exists "$cname" || die "$cname is running without a tmux window; podman stop $cname"
+		refresh_config
+		run_agent --continue
+		id="$(find_window)"
+	fi
+	tmux select-window -t "$id"
+	tmux switch-client -t "$(tmux display-message -p -t "$id" '#{session_id}')"
+}
+
+cmd_review() {
+	task_init "${1:-}"
+	require_task
+	local cur
+	cur="$(current_branch)"
+	[ -n "$cur" ] || die "you're on a detached HEAD; switch to a branch first"
+	[ "$cur" != "$branch" ] || die "already on $branch"
+	[[ $cur != elf/* ]] || die "finish the other review first: elf resume ${cur#elf/}"
+	require_clean
+	git fetch --quiet --no-tags "$work" "$branch:$branch" ||
+		die "the agent's $branch doesn't fast-forward yours: has it pulled your last commits?"
+	echo "$cur" >"$dir/return"
+	git switch --quiet "$branch"
+	git log --oneline --reverse "$(cat "$dir/base")..HEAD"
+	echo "on $branch. Commit any changes, then: elf resume $task"
+}
+
+cmd_resume() {
+	task_init "${1:-}"
+	require_task
+	[ "$(current_branch)" = "$branch" ] || die "not on $branch"
+	[ -f "$dir/return" ] || die "no branch to return to; switch yourself"
+	require_clean
+	git push --quiet "$host_git" "$branch:$branch"
+	git switch --quiet "$(cat "$dir/return")"
+	rm "$dir/return"
+	echo "back on $(current_branch). Tell the agent your feedback; it pulls your commits first"
+	if [ -n "${TMUX:-}" ]; then
+		cmd_attach "$task"
+	fi
+}
+
+cmd_rm() {
+	local force='' opt
+	while getopts f opt; do
+		case $opt in
+		f) force=1 ;;
+		*) exit 1 ;;
+		esac
+	done
+	shift $((OPTIND - 1))
+	task_init "${1:-}"
+	require_task
+	[ "$(current_branch)" != "$branch" ] || die "you're on $branch; switch away first"
+	if [ -z "$force" ]; then
+		local theirs reviewed
+		git fetch --quiet --no-tags "$work" "$branch"
+		theirs="$(git rev-parse FETCH_HEAD)"
+		reviewed="$(git rev-parse --verify --quiet "refs/heads/$branch" || cat "$dir/base")"
+		git merge-base --is-ancestor "$theirs" "$reviewed" ||
+			die "the agent has commits you haven't reviewed (elf review $task), or use rm -f"
+	fi
+	local id
+	id="$(find_window)"
+	[ -z "$id" ] || tmux kill-window -t "$id"
+	podman rm -f --ignore "$cname" >/dev/null
+	rm -rf "$dir" || die "couldn't delete everything; try: podman unshare rm -rf $dir"
+	echo "removed $task"
+	if git show-ref --verify --quiet "refs/heads/$branch"; then
+		echo "your $branch is kept: git branch -D $branch"
+	fi
+}
+
+sub="${1:-}"
+[ $# -eq 0 ] || shift
+case $sub in
+build | login | start | ls | attach | review | resume | rm) "cmd_$sub" "$@" ;;
+-h | --help | help) usage ;;
+*)
+	usage >&2
+	exit 1
+	;;
+esac
