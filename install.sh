@@ -2,36 +2,38 @@
 # Installs elf:
 #   curl -fsSL https://raw.githubusercontent.com/lenkan/elf/main/install.sh | bash
 #
-# Downloads a release into ~/.local/share/elf and links bin/elf into
-# ~/.local/bin. The whole release, not just the script: `elf build` needs
-# the Dockerfile next to it. Run it again to upgrade.
+# Downloads a release binary into ~/.local/bin. Run it again to upgrade.
 #
-# Run from a checkout (./install.sh), it links that checkout's bin/elf
-# instead, so `git pull` updates the command.
-#
-#   ELF_VERSION  tag or branch to install (default: the latest release)
-#   BINDIR       where to put the command (default: ~/.local/bin)
+#   ELF_VERSION  release to install, like v0.2.0 (default: the latest)
+#   BINDIR       where to put it (default: ~/.local/bin)
 #
 # Everything is inside main, so a download cut off halfway runs nothing.
 set -euo pipefail
 
 main() {
-	local bindir="${BINDIR:-$HOME/.local/bin}"
-	local share="${XDG_DATA_HOME:-$HOME/.local/share}/elf"
-	local self="${BASH_SOURCE[0]:-}" root target
+	local bindir="${BINDIR:-$HOME/.local/bin}" arch url file
+	[ "$(uname -s)" = Linux ] || die "elf runs on Linux only"
+	case "$(uname -m)" in
+	x86_64) arch=amd64 ;;
+	aarch64 | arm64) arch=arm64 ;;
+	*) die "no build for $(uname -m)" ;;
+	esac
+	url=https://github.com/lenkan/elf/releases/latest/download
+	if [ -n "${ELF_VERSION:-}" ]; then
+		url=https://github.com/lenkan/elf/releases/download/$ELF_VERSION
+	fi
 
-	if [ -e "$bindir/elf" ] && [ ! -L "$bindir/elf" ]; then
-		die "$bindir/elf exists and isn't a link; remove it first"
-	fi
-	if [ -f "$self" ] && root="$(dirname "$(readlink -f "$self")")" && [ -f "$root/bin/elf" ]; then
-		target="$root/bin/elf"
-	else
-		download "$share"
-		target="$share/bin/elf"
-	fi
+	echo "downloading elf ${ELF_VERSION:-(latest)} for linux/$arch"
+	tmp="$(mktemp -d)" # global: the EXIT trap runs after main returns
+	trap 'rm -rf "$tmp"' EXIT
+	for file in "elf-linux-$arch" SHA256SUMS; do
+		curl -fsSL -o "$tmp/$file" "$url/$file" || die "couldn't download $url/$file"
+	done
+	(cd "$tmp" && sha256sum --check --ignore-missing --quiet SHA256SUMS) || die "checksum mismatch"
+
 	mkdir -p "$bindir"
-	ln -sfn "$target" "$bindir/elf"
-	echo "installed $bindir/elf -> $target"
+	install -m 755 "$tmp/elf-linux-$arch" "$bindir/elf"
+	echo "installed $bindir/elf ($("$bindir/elf" version))"
 
 	case ":$PATH:" in
 	*":$bindir:"*) ;;
@@ -52,41 +54,6 @@ die() {
 
 warn() {
 	echo "elf install: warning: $*" >&2
-}
-
-# Fetches GitHub's source archive of a release into $share, replacing any
-# earlier install.
-download() {
-	local share="$1" repo=lenkan/elf ref url tmp
-	command -v curl >/dev/null || die "needs curl"
-
-	ref="${ELF_VERSION:-}"
-	if [ -z "$ref" ]; then
-		# github.com/<repo>/releases/latest redirects to .../releases/tag/<tag>;
-		# no API call, so no rate limit and no JSON to parse
-		url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")" ||
-			die "couldn't look up the latest release of github.com/$repo"
-		[[ $url == */releases/tag/* ]] ||
-			die "$repo has no releases yet; set ELF_VERSION to a tag or branch"
-		ref="${url##*/releases/tag/}"
-	fi
-
-	echo "downloading elf $ref"
-	mkdir -p "$(dirname "$share")"
-	# Next to $share, so the final mv doesn't cross filesystems
-	tmp="$(mktemp -d "$share.XXXXXX")"
-	trap 'rm -rf "$tmp"' EXIT
-	curl -fsSL "https://github.com/$repo/archive/$ref.tar.gz" |
-		tar -xz -C "$tmp" --strip-components=1 ||
-		die "couldn't download $ref from github.com/$repo"
-	[ -f "$tmp/bin/elf" ] || die "$ref has no bin/elf"
-
-	if [ -e "$share" ]; then
-		[ -f "$share/bin/elf" ] || die "$share exists and isn't an elf install; move it away"
-		rm -rf "$share"
-	fi
-	mv "$tmp" "$share"
-	trap - EXIT
 }
 
 main "$@"

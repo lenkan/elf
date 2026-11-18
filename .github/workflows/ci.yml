@@ -12,11 +12,14 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install linters
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck shfmt
-      - name: Lint shell scripts
-        run: ./scripts/lint.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Lint install.sh
+        run: shellcheck install.sh
       - name: Build the agent image
         run: docker build -t elf .

@@ -1,4 +1,5 @@
-# The image elf agents run in. Add toolchains here.
+# The image elf agents run in; elf embeds it. To add toolchains, copy it and
+# run: elf build -f <your copy>
 FROM docker.io/library/node:24-bookworm
 
 RUN apt-get update \

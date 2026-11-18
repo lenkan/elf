@@ -1,6 +1,6 @@
 # Design direction
 
-The current Bash version is a working prototype: opencode only, and run from tmux. This is where it's headed.
+The current version is a prototype: opencode only, and run from tmux. This is where it's headed.
 
 ## Principles
 
@@ -23,4 +23,3 @@ The current Bash version is a working prototype: opencode only, and run from tmu
 - **Network policy.** Containers have no network except a host proxy. It allowlists hosts: model APIs, package registries, GitHub.
 - **GitHub policy proxy.** The token stays on the host. The container's `gh` talks to a unix socket (`http_unix_socket`). Policy is per repo and read-only by default; GraphQL is POST, so queries are parsed and mutations rejected.
 - **A config file** next to the Dockerfile, added once a second setting is needed. The likely first is a setup command such as `npm ci` after the clone.
-- **Rewrite in Go:** a single binary, the standard-library HTTP proxy, and the container ecosystem's client libraries.

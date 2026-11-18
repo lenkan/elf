@@ -8,16 +8,16 @@ Needs podman and tmux.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lenkan/elf/main/install.sh | bash
-elf build   # image from Dockerfile; add toolchains there
+elf build   # the agent's image
 elf login   # model provider login, once
 ```
 
-Rerun the installer to upgrade. From a clone, `./install.sh` links that clone instead.
+Rerun the installer to upgrade. To add toolchains to the image, copy the [Dockerfile](Dockerfile) and `elf build -f yours`. From a clone: `go build -o ~/.local/bin/elf .`
 
 To uninstall, `elf rm` your tasks, then:
 
 ```bash
-rm -rf ~/.local/bin/elf ~/.local/share/elf ~/.elf
+rm -rf ~/.local/bin/elf ~/.elf
 podman volume rm elf-opencode   # your login
 podman rmi localhost/elf
 ```
