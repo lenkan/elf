@@ -4,7 +4,6 @@ import (
 	"cmp"
 	_ "embed"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -24,24 +23,20 @@ var (
 	promptTemplate string
 )
 
-func build(args []string) error {
-	flags := flag.NewFlagSet("build", flag.ExitOnError)
-	file := flags.String("f", "", "build from your own `Dockerfile` instead of elf's")
-	flags.Parse(args)
-
-	dir := filepath.Dir(*file)
-	if *file == "" {
+func build(file string) error {
+	dir := filepath.Dir(file)
+	if file == "" {
 		tmp, err := os.MkdirTemp("", "elf-build")
 		if err != nil {
 			return err
 		}
 		defer os.RemoveAll(tmp)
-		dir, *file = tmp, filepath.Join(tmp, "Dockerfile")
-		if err := os.WriteFile(*file, dockerfile, 0o644); err != nil {
+		dir, file = tmp, filepath.Join(tmp, "Dockerfile")
+		if err := os.WriteFile(file, dockerfile, 0o644); err != nil {
 			return err
 		}
 	}
-	podman := []string{"build", "-t", image(), "-f", *file}
+	podman := []string{"build", "-t", image(), "-f", file}
 	// Match the agent's opencode to yours
 	if out, err := exec.Command("opencode", "--version").Output(); err == nil {
 		if v := regexp.MustCompile(`\d+\.\d+\.\d+`).FindString(string(out)); v != "" {
@@ -55,15 +50,9 @@ func login() error {
 	return run("podman", append(podmanRun(), image(), "opencode", "--standalone", "auth", "login")...)
 }
 
-func start(args []string) error {
-	flags := flag.NewFlagSet("start", flag.ExitOnError)
-	switchTo := flags.Bool("a", false, "switch to the agent's window")
-	base := flags.String("b", "HEAD", "start from `commit`")
-	flags.Parse(args)
-	if flags.NArg() == 0 {
-		return errUsage
-	}
-	t, err := newTask(flags.Arg(0))
+// start starts an agent on a new task. An empty prompt opens your editor.
+func start(name, base, prompt string, switchTo bool) error {
+	t, err := newTask(name)
 	if err != nil {
 		return err
 	}
@@ -80,16 +69,15 @@ func start(args []string) error {
 	if t.local() != "" {
 		return fmt.Errorf("branch %s already exists", t.branch)
 	}
-	sha, err := git("rev-parse", "--verify", "--quiet", *base+"^{commit}")
+	sha, err := git("rev-parse", "--verify", "--quiet", base+"^{commit}")
 	if err != nil {
-		return fmt.Errorf("unknown base %q", *base)
+		return fmt.Errorf("unknown base %q", base)
 	}
-	baseName := *base
+	baseName := base
 	if baseName == "HEAD" {
 		baseName = cmp.Or(currentBranch(), sha)
 	}
 
-	prompt := strings.Join(flags.Args()[1:], " ")
 	if prompt == "" {
 		if prompt, err = readPrompt(t, baseName); err != nil {
 			return err
@@ -114,7 +102,7 @@ func start(args []string) error {
 	if out, _ := git("status", "--porcelain"); out != "" {
 		fmt.Println("note: the agent doesn't get your uncommitted changes")
 	}
-	if *switchTo {
+	if switchTo {
 		return attach(t)
 	}
 	return nil
@@ -166,25 +154,37 @@ func readPrompt(t *task, baseName string) (string, error) {
 	return prompt.String(), os.RemoveAll(dir)
 }
 
-func ls() error {
+// taskNames lists this repo's tasks.
+func taskNames() ([]string, error) {
 	_, repo, err := repoInfo()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	entries, err := os.ReadDir(filepath.Join(elfHome(), repo))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return nil, nil
 	} else if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() && taskName.MatchString(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
+
+func ls() error {
+	names, err := taskNames()
+	if err != nil {
 		return err
 	}
 	cur := currentBranch()
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		t, err := newTask(e.Name())
+	for _, name := range names {
+		t, err := newTask(name)
 		if err != nil {
-			continue
+			return err
 		}
 		state := "stopped"
 		if cur == t.branch {
@@ -234,18 +234,11 @@ func attach(t *task) error {
 	return err
 }
 
-func rm(args []string) error {
-	flags := flag.NewFlagSet("rm", flag.ExitOnError)
-	force := flags.Bool("f", false, "remove even if the agent has commits you haven't reviewed")
-	flags.Parse(args)
-	t, err := existingTask(flags.Args())
-	if err != nil {
-		return err
-	}
+func rm(t *task, force bool) error {
 	if currentBranch() == t.branch {
 		return fmt.Errorf("you're on %s; switch away first", t.branch)
 	}
-	if !*force {
+	if !force {
 		theirs, err := t.fetch()
 		if err != nil {
 			return err

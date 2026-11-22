@@ -49,12 +49,9 @@ func newTask(name string) (*task, error) {
 	}, nil
 }
 
-// existingTask returns the task named by args[0], which must exist.
-func existingTask(args []string) (*task, error) {
-	if len(args) == 0 {
-		return nil, errUsage
-	}
-	t, err := newTask(args[0])
+// existingTask returns the task with this name, which must exist.
+func existingTask(name string) (*task, error) {
+	t, err := newTask(name)
 	if err != nil {
 		return nil, err
 	}
@@ -62,14 +59,6 @@ func existingTask(args []string) (*task, error) {
 		return nil, fmt.Errorf("no task %q in %s (elf ls)", t.name, t.repo)
 	}
 	return t, nil
-}
-
-func withTask(args []string, fn func(*task) error) error {
-	t, err := existingTask(args)
-	if err != nil {
-		return err
-	}
-	return fn(t)
 }
 
 // repoInfo returns your checkout's top directory, and the repo's name: the

@@ -2,7 +2,8 @@
 # Installs elf:
 #   curl -fsSL https://raw.githubusercontent.com/lenkan/elf/main/install.sh | bash
 #
-# Downloads a release binary into ~/.local/bin. Run it again to upgrade.
+# Downloads a release binary into ~/.local/bin, and its bash completion into
+# ~/.local/share/bash-completion. Run it again to upgrade.
 #
 #   ELF_VERSION  release to install, like v0.2.0 (default: the latest)
 #   BINDIR       where to put it (default: ~/.local/bin)
@@ -34,6 +35,9 @@ main() {
 	mkdir -p "$bindir"
 	install -m 755 "$tmp/elf-linux-$arch" "$bindir/elf"
 	echo "installed $bindir/elf ($("$bindir/elf" version))"
+	local compdir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
+	mkdir -p "$compdir"
+	"$bindir/elf" completion bash >"$compdir/elf"
 
 	case ":$PATH:" in
 	*":$bindir:"*) ;;

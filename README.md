@@ -14,10 +14,12 @@ elf login   # model provider login, once
 
 Rerun the installer to upgrade. To add toolchains to the image, copy the [Dockerfile](Dockerfile) and `elf build -f yours`. From a clone: `go build -o ~/.local/bin/elf .`
 
+The installer sets up bash completion (it needs the bash-completion package). For other shells, see `elf completion --help`.
+
 To uninstall, `elf rm` your tasks, then:
 
 ```bash
-rm -rf ~/.local/bin/elf ~/.elf
+rm -rf ~/.local/bin/elf ~/.local/share/bash-completion/completions/elf ~/.elf
 podman volume rm elf-opencode   # your login
 podman rmi localhost/elf
 ```
