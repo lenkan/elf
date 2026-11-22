@@ -18,7 +18,7 @@ func setup(t *testing.T) *task {
 		t.Setenv(k+"_NAME", "elf")
 		t.Setenv(k+"_EMAIL", "elf@example.com")
 	}
-	t.Setenv("TMUX", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "config"))
 
 	repo := filepath.Join(tmp, "repo")
 	mustGit(t, "init", "--quiet", "--initial-branch=main", repo)

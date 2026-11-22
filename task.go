@@ -135,13 +135,6 @@ func requireClean() error {
 	return nil
 }
 
-func requireTmux() error {
-	if os.Getenv("TMUX") == "" {
-		return errors.New("run this inside tmux")
-	}
-	return nil
-}
-
 // local returns the commit of your elf/<task> branch, or "" if you have none.
 func (t *task) local() string {
 	sha, _ := git("rev-parse", "--verify", "--quiet", "refs/heads/"+t.branch)

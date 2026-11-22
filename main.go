@@ -27,6 +27,7 @@ func rootCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
+	c := podmanContainers{}
 
 	var file string
 	buildCmd := &cobra.Command{
@@ -67,7 +68,7 @@ func rootCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			prompt := strings.Join(args[1:], " ")
-			return start(name, base, prompt, switchTo)
+			return start(c, name, base, prompt, switchTo)
 		},
 	}
 	startCmd.Flags().BoolVarP(
@@ -75,7 +76,7 @@ func rootCmd() *cobra.Command {
 		"attach",
 		"a",
 		false,
-		"switch to the agent's window",
+		"attach to the agent once it has started",
 	)
 	startCmd.Flags().StringVarP(
 		&base,
@@ -92,14 +93,14 @@ func rootCmd() *cobra.Command {
 		Short: "List this repo's tasks",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return ls()
+			return ls(c)
 		},
 	}
 	root.AddCommand(lsCmd)
 
 	attachCmd := &cobra.Command{
 		Use:               "attach <task>",
-		Short:             "Switch to the task's tmux window, restarting the agent if needed",
+		Short:             "Attach to the agent, restarting it if it has exited",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeTasks,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -107,7 +108,7 @@ func rootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return attach(t)
+			return attach(c, t)
 		},
 	}
 	root.AddCommand(attachCmd)
@@ -153,7 +154,7 @@ func rootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return rm(t, force)
+			return rm(c, t, force)
 		},
 	}
 	rmCmd.Flags().BoolVarP(

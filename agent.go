@@ -47,20 +47,20 @@ func build(file string) error {
 }
 
 func login() error {
-	return run("podman", append(podmanRun(), image(), "opencode", "--standalone", "auth", "login")...)
+	args := []string{"run", "--rm", "--interactive", "--tty"}
+	args = append(args, podmanRun()...)
+	args = append(args, image(), "opencode", "--standalone", "auth", "login")
+	return run("podman", args...)
 }
 
 // start starts an agent on a new task. An empty prompt opens your editor.
-func start(name, base, prompt string, switchTo bool) error {
+func start(c containers, name, base, prompt string, switchTo bool) error {
 	t, err := newTask(name)
 	if err != nil {
 		return err
 	}
 
-	if err := requireTmux(); err != nil {
-		return err
-	}
-	if !succeeds("podman", "image", "exists", image()) {
+	if !c.imageExists() {
 		return fmt.Errorf("no image %s, run: elf build", image())
 	}
 	if _, err := os.Stat(t.dir); err == nil {
@@ -95,7 +95,7 @@ func start(name, base, prompt string, switchTo bool) error {
 	}
 	full := strings.NewReplacer("{branch}", t.branch, "{base}", baseName, "{prompt}", strings.TrimSpace(prompt)).
 		Replace(promptTemplate)
-	if _, err := runAgent(t, "--prompt", full); err != nil {
+	if err := c.start(t, "--prompt", full); err != nil {
 		return err
 	}
 	fmt.Printf("started %s on %s from %s. Watch it: elf attach %s\n", t.name, t.branch, baseName, t.name)
@@ -103,7 +103,7 @@ func start(name, base, prompt string, switchTo bool) error {
 		fmt.Println("note: the agent doesn't get your uncommitted changes")
 	}
 	if switchTo {
-		return attach(t)
+		return attach(c, t)
 	}
 	return nil
 }
@@ -175,7 +175,7 @@ func taskNames() ([]string, error) {
 	return names, nil
 }
 
-func ls() error {
+func ls(c containers) error {
 	names, err := taskNames()
 	if err != nil {
 		return err
@@ -189,52 +189,35 @@ func ls() error {
 		state := "stopped"
 		if cur == t.branch {
 			state = "reviewing"
-		} else if succeeds("podman", "container", "exists", t.container) {
-			state = "running"
+		} else if s := c.state(t); s != "" {
+			state = s
 		}
 		fmt.Printf("%-30s %s\n", t.name, state)
 	}
 	return nil
 }
 
-func attach(t *task) error {
-	if err := requireTmux(); err != nil {
-		return err
-	}
-	id := findWindow(t)
-	// remain-on-exit kept a failed agent's window; replace it
-	if id != "" {
-		if dead, _ := output("tmux", "display-message", "-p", "-t", id, "#{pane_dead}"); dead == "1" {
-			if _, err := output("tmux", "kill-window", "-t", id); err != nil {
+func attach(c containers, t *task) error {
+	state := c.state(t)
+	if state != "running" {
+		if state != "" {
+			fmt.Printf("%s had exited, restarting it\n", t.name)
+			if err := c.remove(t); err != nil {
 				return err
 			}
-			id = ""
-		}
-	}
-	if id == "" {
-		if succeeds("podman", "container", "exists", t.container) {
-			return fmt.Errorf("%s is running without a tmux window; podman stop %[1]s", t.container)
 		}
 		if err := refreshConfig(); err != nil {
 			return err
 		}
-		var err error
-		if id, err = runAgent(t, "--continue"); err != nil {
+		if err := c.start(t, "--continue"); err != nil {
 			return err
 		}
 	}
-	if _, err := output("tmux", "select-window", "-t", id); err != nil {
-		return err
-	}
-	session, err := output("tmux", "display-message", "-p", "-t", id, "#{session_id}")
-	if err != nil {
-		return err
-	}
-	_, err = output("tmux", "switch-client", "-t", session)
-	return err
+	fmt.Printf("attaching to %s, detach with %s\n", t.name, detachKeys)
+	return c.attach(t)
 }
 
-func rm(t *task, force bool) error {
+func rm(c containers, t *task, force bool) error {
 	if currentBranch() == t.branch {
 		return fmt.Errorf("you're on %s; switch away first", t.branch)
 	}
@@ -253,12 +236,7 @@ func rm(t *task, force bool) error {
 			return fmt.Errorf("the agent has commits you haven't reviewed (elf review %s), or use rm -f", t.name)
 		}
 	}
-	if id := findWindow(t); id != "" {
-		if _, err := output("tmux", "kill-window", "-t", id); err != nil {
-			return err
-		}
-	}
-	if _, err := output("podman", "rm", "-f", "--ignore", t.container); err != nil {
+	if err := c.remove(t); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(t.dir); err != nil {
@@ -271,54 +249,15 @@ func rm(t *task, force bool) error {
 	return nil
 }
 
-// podmanRun returns the podman arguments every agent container shares.
+// podmanRun returns the podman run arguments every agent container shares.
 func podmanRun() []string {
 	name, _ := git("config", "user.name")
 	email, _ := git("config", "user.email")
-	return []string{"run", "--rm", "-it", "--hostname", "elf",
+	return []string{"--hostname", "elf",
 		"--userns=keep-id:uid=1000,gid=1000",
 		"-e", "GIT_AUTHOR_NAME=" + name, "-e", "GIT_AUTHOR_EMAIL=" + email,
 		"-e", "GIT_COMMITTER_NAME=" + name, "-e", "GIT_COMMITTER_EMAIL=" + email,
 		"-v", volume + ":/home/node/.local/share/opencode:U"}
-}
-
-// runAgent opens a tmux window running opencode in the task's container, and
-// returns the window's id.
-func runAgent(t *task, opencodeArgs ...string) (string, error) {
-	podman := append([]string{"podman"}, podmanRun()...)
-	podman = append(podman, "--name", t.container,
-		"-v", configDir()+":/home/node/.config/opencode:ro,z",
-		"-v", t.hostGit+":"+t.hostGit+":ro,z",
-		"-v", t.work+":"+t.work+":z",
-		"-w", t.work,
-		image(), "opencode", "--standalone", "--auto", t.work)
-	podman = append(podman, opencodeArgs...)
-	id, err := output("tmux", append([]string{"new-window", "-d", "-P", "-F", "#{window_id}", "-n", t.name, "--"}, podman...)...)
-	if err != nil {
-		return "", err
-	}
-	for _, opt := range [][]string{
-		{"@elf", t.container},
-		// Keep the window if podman or opencode fails, so the error stays readable
-		{"remain-on-exit", "failed"},
-		// Flags the window in the status bar once the agent goes quiet: done, or waiting
-		{"monitor-silence", "30"},
-	} {
-		if _, err := output("tmux", "set-option", "-w", "-t", id, opt[0], opt[1]); err != nil {
-			return "", err
-		}
-	}
-	return id, nil
-}
-
-func findWindow(t *task) string {
-	out, _ := output("tmux", "list-windows", "-a", "-F", "#{window_id} #{@elf}")
-	for line := range strings.Lines(out) {
-		if id, name, _ := strings.Cut(strings.TrimSpace(line), " "); name == t.container {
-			return id
-		}
-	}
-	return ""
 }
 
 // configDir is where elf keeps its copy of your opencode config.

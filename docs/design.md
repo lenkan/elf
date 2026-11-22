@@ -1,6 +1,6 @@
 # Design direction
 
-The current version is a prototype: opencode only, and run from tmux. This is where it's headed.
+The current version is a prototype: opencode only. This is where it's headed.
 
 ## Principles
 
@@ -16,7 +16,6 @@ The current version is a prototype: opencode only, and run from tmux. This is wh
 
 ## Planned
 
-- **Command-line first.** `elf start` asks for the prompt in your editor and runs the agent detached. `elf attach` uses `podman attach`, with detach keys that no harness uses: the default Ctrl+P conflicts with TUIs. Opening a tmux window becomes optional.
 - **Per-repo toolchain.** The repo commits `.elf/Dockerfile`, which describes only the project's toolchain (`FROM rust:…`). elf builds its own layer on top: the harness, a home directory, mount points. The image is tagged by a hash of `.elf/` and rebuilt when that changes. Without the file, a default image is used.
 - **Harnesses as data.** Each harness is a definition: how to install it, start it with a prompt in auto mode, resume it, its credential volume, its API hosts, and an optional status hook. There are built-in definitions plus user config, because the CLI flags change often.
 - **Status.** Harness hooks write `working` / `needs you` / `done`, and `elf ls` shows it.

@@ -44,7 +44,7 @@ main() {
 	*) warn "$bindir is not on your PATH; add it in your shell's rc file" ;;
 	esac
 	local cmd missing=()
-	for cmd in git podman tmux; do
+	for cmd in git podman; do
 		command -v "$cmd" >/dev/null || missing+=("$cmd")
 	done
 	[ ${#missing[@]} -eq 0 ] || warn "elf needs ${missing[*]}, not found"

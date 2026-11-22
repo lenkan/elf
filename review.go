@@ -142,9 +142,6 @@ func resume(t *task) error {
 	if err := os.Remove(filepath.Join(t.dir, "return")); err != nil {
 		return err
 	}
-	fmt.Printf("back on %s. Tell the agent your feedback; it pulls your commits first\n", back)
-	if os.Getenv("TMUX") != "" {
-		return attach(t)
-	}
+	fmt.Printf("back on %s. Give the agent your feedback, it pulls your commits first: elf attach %s\n", back, t.name)
 	return nil
 }

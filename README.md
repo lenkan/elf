@@ -4,7 +4,7 @@ Runs opencode agents in podman containers, each on its own branch. You review th
 
 ## Setup
 
-Needs podman and tmux.
+Needs podman.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lenkan/elf/main/install.sh | bash
@@ -26,18 +26,18 @@ podman rmi localhost/elf
 
 ## Usage
 
-Inside tmux, from your repo:
+From your repo:
 
 ```bash
-elf start fix-login    # prompt opens in your git editor; -a to switch to it
+elf start fix-login    # prompt opens in your git editor; -a to attach to it
 elf ls
-elf attach fix-login
+elf attach fix-login   # Ctrl+] to detach; the agent keeps running
 elf review fix-login   # check out elf/fix-login here; again for its new commits
-elf resume fix-login   # back to your branch; give feedback in its window
+elf resume fix-login   # back to your branch; attach to give feedback
 elf rm fix-login
 ```
 
-tmux flags a window once its agent has been quiet for 30 seconds.
+Agents run in the background, so you can attach from anywhere, e.g. a tmux window: `tmux new-window elf attach fix-login`.
 
 ## What the agent can reach
 
