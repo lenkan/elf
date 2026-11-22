@@ -10,7 +10,7 @@ Needs opencode, git, and docker or podman. elf uses docker if it's installed; `E
 curl -fsSL https://raw.githubusercontent.com/lenkan/elf/main/install.sh | bash
 ```
 
-Or `make install` from a clone. Then build the agent's image, with your opencode's version:
+`make install` from a clone installs a development build as `elf-dev`. Then build the agent's image, with your opencode's version:
 
 ```bash
 elf build
@@ -35,10 +35,15 @@ elf/brave-otter: attach, review or delete? [a/r/d, enter attaches]
 - **Review:** checks out its branch here, with its new commits. Run it, tweak it, commit. The next `elf` from that branch hands your commits to the agent.
 - **Delete:** removes the container, and keeps the agent's work in your branch.
 
+## Services
+
+If your repo has a compose file, each new task gets its own copy of its services: its own database, on `localhost` in the agent's container, with nothing published on your machine. elf uses `docker-compose.elf.yml` if you have one, else `compose.yaml` or `docker-compose.yml`. The services come from your checkout, not the agent's, and are deleted with the task.
+
 ## What the agent can reach
 
 - Its own repo.
 - A copy of your opencode config, and your model logins, which it can read.
+- Its services, and anything your compose file mounts into them. Leave out what agents shouldn't see in `docker-compose.elf.yml`.
 - The network.
 
 Nothing of your machine is mounted, and its git runs in its container. Code you check out is still the agent's: read it before you run it.

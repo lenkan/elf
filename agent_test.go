@@ -11,9 +11,11 @@ import (
 // fakeAgents stands in for the containers: each agent's repo is a directory,
 // set up like the container does.
 type fakeAgents struct {
-	dir   string
-	names []string // newest first
-	chats []string
+	dir     string
+	names   []string // newest first
+	chats   []string
+	compose string   // the compose file the last task's services came from
+	hosts   []string // the last task's services, which its container got as hosts
 }
 
 // repo is the agent's repo of task name.
@@ -54,7 +56,17 @@ func (f *fakeAgents) remove(t *task) error {
 	return os.RemoveAll(f.repo(t.name))
 }
 
-func (f *fakeAgents) create(t *task) error {
+func (f *fakeAgents) services(file string) ([]string, error) {
+	return []string{"db", "search"}, nil
+}
+
+func (f *fakeAgents) startServices(t *task, file string, services []string) error {
+	f.compose = file
+	return nil
+}
+
+func (f *fakeAgents) create(t *task, services []string) error {
+	f.hosts = services
 	dir := f.repo(t.name)
 	for _, args := range [][]string{
 		{"init", "--quiet", dir},
@@ -203,5 +215,26 @@ func TestDeleteAsksBeforeLosingWork(t *testing.T) {
 	mustElf(t, a, "1\nd\ny\n")
 	if len(a.names) != 0 {
 		t.Error("not deleted after you said yes")
+	}
+}
+
+func TestStartsTheServicesOfYourComposeFile(t *testing.T) {
+	a := setup(t)
+	mustElf(t, a, "")
+	if a.compose != "" || a.hosts != nil {
+		t.Fatalf("started services without a compose file: %q", a.compose)
+	}
+
+	for _, name := range []string{"docker-compose.yml", "docker-compose.elf.yml"} {
+		if err := os.WriteFile(name, []byte("services: {}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustElf(t, a, "\n")
+	if filepath.Base(a.compose) != "docker-compose.elf.yml" {
+		t.Errorf("used %q, want the one for elf", a.compose)
+	}
+	if !slices.Equal(a.hosts, []string{"db", "search"}) {
+		t.Errorf("the container got hosts %q, want the services", a.hosts)
 	}
 }

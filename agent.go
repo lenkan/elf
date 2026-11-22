@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,7 +18,9 @@ type agents interface {
 	tasks(repo string) ([]string, error) // newest first
 	state(t *task) string
 	title(t *task) string
-	create(t *task) error
+	create(t *task, services []string) error
+	services(file string) ([]string, error)
+	startServices(t *task, file string, services []string) error
 	ensureRunning(t *task) error
 	chat(t *task) error
 	remove(t *task) error
@@ -111,11 +115,24 @@ func startTask(a agents, repo string) (*task, error) {
 	}
 	t := newTask(repo, freeName(a, repo))
 
-	err = a.create(t)
+	file := composeFile()
+	var services []string
+	if file != "" {
+		services, err = a.services(file)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	err = a.create(t, services)
 	if err != nil {
 		return nil, err
 	}
 	err = addRemote(a, t, sha)
+	if err == nil && file != "" {
+		fmt.Println("starting the services in", filepath.Base(file))
+		err = a.startServices(t, file, services)
+	}
 	if err != nil {
 		a.remove(t)
 		git("remote", "remove", t.remote)
@@ -127,6 +144,23 @@ func startTask(a agents, repo string) (*task, error) {
 		fmt.Println("note: the agent doesn't get your uncommitted changes")
 	}
 	return t, nil
+}
+
+// composeFile returns your repo's compose file, preferring one just for elf, or
+// "" if it has none.
+func composeFile() string {
+	top, err := git("rev-parse", "--show-toplevel")
+	if err != nil {
+		return ""
+	}
+	for _, name := range []string{"docker-compose.elf.yml", "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"} {
+		file := filepath.Join(top, name)
+		_, err := os.Stat(file)
+		if err == nil {
+			return file
+		}
+	}
+	return ""
 }
 
 func addRemote(a agents, t *task, sha string) error {

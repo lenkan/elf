@@ -47,7 +47,9 @@ func connect(image string) (engine, error) {
 	return engine{}, errors.New("elf needs docker or podman")
 }
 
-func (e engine) create(t *task) error {
+// create creates the task's container. services are the names of its compose
+// services, which share its network: they resolve to localhost.
+func (e engine) create(t *task, services []string) error {
 	credentials, err := output("opencode", "auth", "export")
 	if err != nil {
 		return err
@@ -55,24 +57,27 @@ func (e engine) create(t *task) error {
 	name, _ := git("config", "user.name")
 	email, _ := git("config", "user.email")
 
-	_, err = output(e.cli, "create",
+	args := []string{"create",
 		"--pull", "never",
 		"--init",
 		"--name", t.container,
-		"--label", "elf.repo="+t.repo,
-		"--label", "elf.task="+t.name,
-		"--label", "elf.branch="+t.branch,
+		"--label", "elf.repo=" + t.repo,
+		"--label", "elf.task=" + t.name,
+		"--label", "elf.branch=" + t.branch,
 		"--hostname", "elf",
-		"--env", "ELF_INSTRUCTIONS="+instructions,
-		"--env", "ELF_CREDENTIALS="+credentials,
-		"--env", "OPENCODE_PASSWORD="+rand.Text(),
-		"--env", "GIT_AUTHOR_NAME="+name,
-		"--env", "GIT_AUTHOR_EMAIL="+email,
-		"--env", "GIT_COMMITTER_NAME="+name,
-		"--env", "GIT_COMMITTER_EMAIL="+email,
-		e.image,
-		"sh", "-c", serveScript,
-	)
+		"--env", "ELF_INSTRUCTIONS=" + instructions,
+		"--env", "ELF_CREDENTIALS=" + credentials,
+		"--env", "OPENCODE_PASSWORD=" + rand.Text(),
+		"--env", "GIT_AUTHOR_NAME=" + name,
+		"--env", "GIT_AUTHOR_EMAIL=" + email,
+		"--env", "GIT_COMMITTER_NAME=" + name,
+		"--env", "GIT_COMMITTER_EMAIL=" + email,
+	}
+	for _, service := range services {
+		args = append(args, "--add-host", service+":127.0.0.1")
+	}
+	args = append(args, e.image, "sh", "-c", serveScript)
+	_, err = output(e.cli, args...)
 	if err != nil {
 		return fmt.Errorf("%w\nno image %s? build it: elf build", err, e.image)
 	}
@@ -186,8 +191,51 @@ func (e engine) build() error {
 }
 
 func (e engine) remove(t *task) error {
-	_, err := output(e.cli, "rm", "--force", t.container)
+	_, err := output(e.cli, "compose", "--project-name", t.container, "down", "--volumes")
+	if err != nil {
+		return err
+	}
+	_, err = output(e.cli, "rm", "--force", t.container)
 	return err
+}
+
+func (e engine) services(file string) ([]string, error) {
+	out, err := output(e.cli, "compose", "--file", file, "config", "--services")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
+}
+
+// startServices starts the task's own copy of the compose services, in the
+// network of its container.
+func (e engine) startServices(t *task, file string, services []string) error {
+	override := "services:\n"
+	for _, service := range services {
+		override += "  " + service + ":\n"
+		override += "    network_mode: container:" + t.container + "\n"
+		// Published ports and fixed names would clash between tasks
+		override += "    ports: !reset []\n"
+		override += "    container_name: !reset null\n"
+		override += "    networks: !reset []\n"
+	}
+	overrideFile, err := os.CreateTemp("", "elf-compose-*.yml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(overrideFile.Name())
+	_, err = overrideFile.WriteString(override)
+	if err != nil {
+		return err
+	}
+	overrideFile.Close()
+
+	return run(e.cli, "compose",
+		"--project-name", t.container,
+		"--file", file,
+		"--file", overrideFile.Name(),
+		"up", "--detach",
+	)
 }
 
 func (e engine) tasks(repo string) ([]string, error) {
@@ -234,6 +282,11 @@ func (e engine) ensureRunning(t *task) error {
 		return nil
 	}
 	_, err := output(e.cli, "start", t.container)
+	if err != nil {
+		return err
+	}
+	// The services lost the network of the stopped container
+	_, err = output(e.cli, "compose", "--project-name", t.container, "restart")
 	return err
 }
 
