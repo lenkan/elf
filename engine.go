@@ -99,7 +99,33 @@ func (e engine) setUp(t *task) error {
 		return err
 	}
 	t.work = home + "/work/repo"
-	return e.copyConfig(t, home+"/.config/opencode")
+	err = e.copyConfig(t, home+"/.config/opencode")
+	if err != nil {
+		return err
+	}
+	return e.copyModel(t)
+}
+
+// copyModel gives the agent the model you last picked in opencode, which it
+// keeps in its state, not its config.
+func (e engine) copyModel(t *task) error {
+	state := filepath.Join(os.Getenv("HOME"), ".local", "state", "opencode")
+	if os.Getenv("XDG_STATE_HOME") != "" {
+		state = filepath.Join(os.Getenv("XDG_STATE_HOME"), "opencode")
+	}
+	model, err := os.ReadFile(filepath.Join(state, "model.json"))
+	if err != nil {
+		return nil
+	}
+	// Written by the container's user, so opencode can save your next pick
+	cmd := exec.Command(e.cli, "exec", "--interactive", t.container, "sh", "-c",
+		"mkdir -p ~/.local/state/opencode && cat > ~/.local/state/opencode/model.json")
+	cmd.Stdin = bytes.NewReader(model)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s exec: %s", e.cli, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // copyConfig follows symlinks (tar -h): they wouldn't resolve in the container.
