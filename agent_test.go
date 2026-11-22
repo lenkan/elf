@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -236,5 +237,27 @@ func TestStartsTheServicesOfYourComposeFile(t *testing.T) {
 	}
 	if !slices.Equal(a.hosts, []string{"db", "search"}) {
 		t.Errorf("the container got hosts %q, want the services", a.hosts)
+	}
+}
+
+func TestPsListsTheTasks(t *testing.T) {
+	a := setup(t)
+	var out bytes.Buffer
+	if err := ps(a, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "" {
+		t.Fatalf("listed tasks before there were any: %q", out.String())
+	}
+
+	mustElf(t, a, "")
+	name := a.names[0]
+	commit(t, a.repo(name), "agent")
+	if err := ps(a, &out); err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(out.String())
+	if want := []string{"1", "elf/" + name, "running", "1", "new"}; !slices.Equal(fields, want) {
+		t.Errorf("ps = %q, want %q", out.String(), want)
 	}
 }

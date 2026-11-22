@@ -56,6 +56,20 @@ func rootCmd() *cobra.Command {
 	}
 	root.AddCommand(buildCmd)
 
+	psCmd := &cobra.Command{
+		Use:   "ps",
+		Short: "List the repo's tasks",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := connect(image)
+			if err != nil {
+				return err
+			}
+			return ps(e, cmd.OutOrStdout())
+		},
+	}
+	root.AddCommand(psCmd)
+
 	return root
 }
 

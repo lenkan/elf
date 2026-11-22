@@ -87,14 +87,7 @@ func pickTask(a agents, repo string, names []string, in *bufio.Reader) (*task, e
 		return nil, nil
 	}
 	fmt.Println("tasks:")
-	for i, name := range names {
-		t := newTask(repo, name)
-		state := a.state(t)
-		if state == "running" {
-			git("fetch", "--quiet", t.remote)
-		}
-		fmt.Printf("  %d  %-24s %-8s %-7s %s\n", i+1, t.branch, state, newCommits(t), a.title(t))
-	}
+	listTasks(a, repo, names, os.Stdout)
 	fmt.Print("task number, or enter for a new one: ")
 
 	answer := ask(in)
@@ -106,6 +99,32 @@ func pickTask(a agents, repo string, names []string, in *bufio.Reader) (*task, e
 		return nil, fmt.Errorf("no task %q", answer)
 	}
 	return newTask(repo, names[n-1]), nil
+}
+
+// ps lists the repo's tasks, numbered as elf asks for them.
+func ps(a agents, w io.Writer) error {
+	repo, err := repoName()
+	if err != nil {
+		return err
+	}
+	names, err := a.tasks(repo)
+	if err != nil {
+		return err
+	}
+	listTasks(a, repo, names, w)
+	return nil
+}
+
+// listTasks prints a line for each task, fetching the running ones' new commits.
+func listTasks(a agents, repo string, names []string, w io.Writer) {
+	for i, name := range names {
+		t := newTask(repo, name)
+		state := a.state(t)
+		if state == "running" {
+			git("fetch", "--quiet", t.remote)
+		}
+		fmt.Fprintf(w, "  %d  %-24s %-8s %-7s %s\n", i+1, t.branch, state, newCommits(t), a.title(t))
+	}
 }
 
 func startTask(a agents, repo string) (*task, error) {

@@ -35,6 +35,8 @@ elf/brave-otter: attach, review or delete? [a/r/d, enter attaches]
 - **Review:** checks out its branch here, with its new commits. Run it, tweak it, commit. The next `elf` from that branch hands your commits to the agent.
 - **Delete:** removes the container, and keeps the agent's work in your branch.
 
+`elf ps` lists the tasks without asking anything.
+
 ## Services
 
 If your repo has a compose file, each new task gets its own copy of its services: its own database, on `localhost` in the agent's container, with nothing published on your machine. elf uses `docker-compose.elf.yml` if you have one, else `compose.yaml` or `docker-compose.yml`. The services come from your checkout, not the agent's, and are deleted with the task.
