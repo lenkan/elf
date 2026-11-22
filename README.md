@@ -1,48 +1,44 @@
 # elf
 
-Runs opencode agents in podman containers, each on its own branch. You review the branch in your checkout, then hand it back.
+Runs coding agents in containers, so they can't read or run anything on your machine. You chat with them from your terminal and review their work with git.
 
 ## Setup
 
-Needs podman.
+Needs opencode, git, and docker or podman. elf uses docker if it's installed; `ELF_ENGINE=podman` picks podman.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lenkan/elf/main/install.sh | bash
-elf build   # the agent's image
-elf login   # model provider login, once
 ```
 
-Rerun the installer to upgrade. To add toolchains to the image, copy the [Dockerfile](Dockerfile) and `elf build -f yours`. From a clone: `make install`.
-
-The installer sets up bash completion (it needs the bash-completion package). For other shells, see `elf completion --help`.
-
-To uninstall, `elf rm` your tasks, then:
+Or `make install` from a clone. Then build the agent's image, with your opencode's version:
 
 ```bash
-rm -rf ~/.local/bin/elf ~/.local/share/bash-completion/completions/elf ~/.elf
-podman volume rm elf-opencode   # your login
-podman rmi localhost/elf
+elf build
 ```
+
+It has common tools, plus fnm, rustup, Go and uv for the versions your repo asks for. `elf --image` uses another image: it needs opencode, git and a non-root user.
 
 ## Usage
 
-From your repo:
+Run `elf` in your repo:
 
-```bash
-elf start fix-login    # prompt opens in your git editor; -a to attach to it
-elf ls
-elf attach fix-login   # Ctrl+] to detach; the agent keeps running
-elf review fix-login   # check out elf/fix-login here; again for its new commits
-elf resume fix-login   # back to your branch; attach to give feedback
-elf rm fix-login
+```
+tasks:
+  1  elf/brave-otter          running  2 new   Fix the login redirect
+
+task number, or enter for a new one: 1
+elf/brave-otter: attach, review or delete? [a/r/d, enter attaches]
 ```
 
-Agents run in the background, so you can attach from anywhere, e.g. a tmux window: `tmux new-window elf attach fix-login`.
+- **New task:** an agent in its own container, on a copy of your current commit. Tell it what to do, then quit the chat with Ctrl+C; it keeps working.
+- **Attach:** back to its chat.
+- **Review:** checks out its branch here, with its new commits. Run it, tweak it, commit. The next `elf` from that branch hands your commits to the agent.
+- **Delete:** removes the container, and keeps the agent's work in your branch.
 
 ## What the agent can reach
 
-- Its own clone, read-write, and a read-only copy of your repo.
-- Its own credentials (`elf-opencode` volume) and a read-only copy of your opencode config.
+- Its own repo.
+- A copy of your opencode config, and your model logins, which it can read.
 - The network.
 
-It runs with `--auto`, so it never asks for permission. Your machine only ever runs `git fetch` against its clone, so its hooks and config never run on your machine. Code you check out with `review` is still the agent's code: read it before you run it.
+Nothing of your machine is mounted, and its git runs in its container. Code you check out is still the agent's: read it before you run it.

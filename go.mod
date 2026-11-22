@@ -1,8 +1,11 @@
 module github.com/lenkan/elf
 
-go 1.26
+go 1.26.0
 
-require github.com/spf13/cobra v1.10.2
+require (
+	github.com/dustinkirkland/golang-petname v0.0.0-20261016130456-fdd95a3d0543
+	github.com/spf13/cobra v1.10.2
+)
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
