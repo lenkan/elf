@@ -9,8 +9,12 @@
 set -euo pipefail
 
 main() {
-	local bindir="${BINDIR:-$HOME/.local/bin}" arch url file
-	[ "$(uname -s)" = Linux ] || die "elf runs on Linux only"
+	local bindir="${BINDIR:-$HOME/.local/bin}" os arch binary url file
+	case "$(uname -s)" in
+	Linux) os=linux ;;
+	Darwin) os=darwin ;;
+	*) die "no build for $(uname -s)" ;;
+	esac
 	case "$(uname -m)" in
 	x86_64) arch=amd64 ;;
 	aarch64 | arm64) arch=arm64 ;;
@@ -21,16 +25,17 @@ main() {
 		url=https://github.com/lenkan/elf/releases/download/$ELF_VERSION
 	fi
 
-	echo "downloading elf ${ELF_VERSION:-(latest)} for linux/$arch"
+	binary="elf-$os-$arch"
+	echo "downloading elf ${ELF_VERSION:-(latest)} for $os/$arch"
 	tmp="$(mktemp -d)" # global: the EXIT trap runs after main returns
 	trap 'rm -rf "$tmp"' EXIT
-	for file in "elf-linux-$arch" SHA256SUMS; do
+	for file in "$binary" SHA256SUMS; do
 		curl -fsSL -o "$tmp/$file" "$url/$file" || die "couldn't download $url/$file"
 	done
-	(cd "$tmp" && sha256sum --check --ignore-missing --quiet SHA256SUMS) || die "checksum mismatch"
+	(cd "$tmp" && grep " $binary\$" SHA256SUMS | sha256 --check --status) || die "checksum mismatch"
 
 	mkdir -p "$bindir"
-	install -m 755 "$tmp/elf-linux-$arch" "$bindir/elf"
+	install -m 755 "$tmp/$binary" "$bindir/elf"
 	echo "installed $bindir/elf ($("$bindir/elf" --version))"
 	local compdir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
 	mkdir -p "$compdir"
@@ -42,6 +47,15 @@ main() {
 	esac
 	command -v git >/dev/null || warn "elf needs git, not found"
 	echo "next: elf build"
+}
+
+# sha256 is sha256sum on Linux, shasum on macOS.
+sha256() {
+	if command -v sha256sum >/dev/null; then
+		sha256sum "$@"
+	else
+		shasum -a 256 "$@"
+	fi
 }
 
 die() {
