@@ -12,7 +12,7 @@ elf build   # the agent's image
 elf login   # model provider login, once
 ```
 
-Rerun the installer to upgrade. To add toolchains to the image, copy the [Dockerfile](Dockerfile) and `elf build -f yours`. From a clone: `go build -o ~/.local/bin/elf .`
+Rerun the installer to upgrade. To add toolchains to the image, copy the [Dockerfile](Dockerfile) and `elf build -f yours`. From a clone: `make install`.
 
 The installer sets up bash completion (it needs the bash-completion package). For other shells, see `elf completion --help`.
 
